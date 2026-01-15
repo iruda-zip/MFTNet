@@ -1,6 +1,6 @@
 import numpy as np
 from glob import glob
-from tqdm import tqdm_notebook as tqdm
+from tqdm.notebook import tqdm as tqdm
 from sklearn.metrics import confusion_matrix
 import time
 import cv2
@@ -101,7 +101,8 @@ def test(net, test_ids, all=False, stride=WINDOW_SIZE[0], batch_size=BATCH_SIZE,
                 # Build the tensor
                 image_patches = [np.copy(img[x:x + w, y:y + h]).transpose((2, 0, 1)) for x, y, w, h in coords]
                 image_patches = np.asarray(image_patches)
-                image_patches = Variable(torch.from_numpy(image_patches).cuda(), volatile=True)
+                # image_patches = Variable(torch.from_numpy(image_patches).cuda(), volatile=True)
+                image_patches = torch.from_numpy(image_patches).cuda()
 
                 min = np.min(dsm)
                 max = np.max(dsm)
@@ -111,7 +112,8 @@ def test(net, test_ids, all=False, stride=WINDOW_SIZE[0], batch_size=BATCH_SIZE,
                     dsm = (dsm - min) / (max - min)
                 dsm_patches = [np.copy(dsm[x:x + w, y:y + h]) for x, y, w, h in coords]
                 dsm_patches = np.asarray(dsm_patches)
-                dsm_patches = Variable(torch.from_numpy(dsm_patches).cuda(), volatile=True)
+                # dsm_patches = Variable(torch.from_numpy(dsm_patches).cuda(), volatile=True)
+                dsm_patches = torch.from_numpy(dsm_patches).cuda()
 
                 # Do the inference
                 outs = net(image_patches, dsm_patches, mode='Test')
@@ -140,7 +142,7 @@ def test(net, test_ids, all=False, stride=WINDOW_SIZE[0], batch_size=BATCH_SIZE,
         return accuracy
 
 
-def train(net, optimizer, epochs, scheduler=None, weights=WEIGHTS, save_epoch=1):
+def train(net, optimizer, epochs, scheduler=None, weights=WEIGHTS, save_epoch=10):
     losses = np.zeros(1000000)
     mean_losses = np.zeros(100000000)
     weights = weights.cuda()
