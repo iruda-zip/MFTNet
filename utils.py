@@ -57,7 +57,7 @@ if DATASET == 'Vaihingen':
     test_ids = ['5', '21', '15', '30']
     Stride_Size = 32
     epochs = 50
-    save_epoch = 1
+    save_epoch = 10
     MAIN_FOLDER = FOLDER + 'Vaihingen/'
     DATA_FOLDER = MAIN_FOLDER + 'top/top_mosaic_09cm_area{}.tif'
     DSM_FOLDER = MAIN_FOLDER + 'dsm/dsm_09cm_matching_area{}.tif'
