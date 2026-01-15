@@ -16,7 +16,7 @@ import torch.nn.init
 from utils import *
 from torch.autograd import Variable
 from IPython.display import clear_output
-from MedSAM.UNetFormer_MMSAM import UNetFormer as MFNet
+from UNetFormer_MMSAM import UNetFormer as MFNet
 try:
     from urllib.request import URLopener
 except ImportError:
