@@ -476,6 +476,99 @@ def draw_features(feature, savename=''):
     visualize = cv2.applyColorMap(visualize, cv2.COLORMAP_JET)
     cv2.imwrite(savedir, visualize)
 
+class TerraceBlock(nn.Module):
+    """
+    TNet의 핵심 블록: Add + ReLU6
+    in_channels_up: 아래 단계에서 올라온 Feature (Upsampling 대상)
+    in_channels_skip: SEFusion을 거친 Feature (Projection 대상)
+    out_channels: 융합 후 출력 채널
+    """
+    def __init__(self, in_channels_up, in_channels_skip, out_channels):
+        super().__init__()
+        
+        # 1. Upsampling Path (이전 디코더 결과)
+        self.up_conv = nn.Sequential(
+            nn.ConvTranspose2d(in_channels_up, out_channels, kernel_size=3, stride=2, padding=1, output_padding=1),
+            nn.BatchNorm2d(out_channels)
+        )
+        
+        # 2. Skip Connection Path (SEFusion 결과)
+        self.skip_conv = nn.Sequential(
+            nn.Conv2d(in_channels_skip, out_channels, kernel_size=3, padding=1),
+            nn.BatchNorm2d(out_channels)
+        )
+        
+        # 3. Activation (ReLU6)
+        self.act = nn.ReLU6(inplace=True)
+
+    def forward(self, x_up, x_skip):
+        # x_up: Low Resolution (e.g., 1/32) -> Upsampled
+        # x_skip: High Resolution (e.g., 1/16)
+        
+        t_feat = self.up_conv(x_up)
+        
+        # [Safety] 해상도 보정 (1 pixel 차이 방지)
+        if t_feat.shape[-2:] != x_skip.shape[-2:]:
+            t_feat = F.interpolate(t_feat, size=x_skip.shape[-2:], mode='bilinear', align_corners=False)
+            
+        c_feat = self.skip_conv(x_skip)
+        
+        # Element-wise Addition
+        out = t_feat + c_feat
+        return self.act(out)
+
+class TNetDecoder_Fused(nn.Module):
+    def __init__(self, encoder_channels=(256, 256, 256, 256), num_classes=6):
+        super().__init__()
+        
+        # 입력 채널 (모두 256)
+        # c1=1/4, c2=1/8, c3=1/16, c4=1/32
+        c1, c2, c3, c4 = encoder_channels
+        
+        # 디코더 내부 채널 설계 (효율성을 위해 점진적으로 줄임)
+        # 1/32 (256ch) -> 1/16 (128ch) -> 1/8 (64ch) -> 1/4 (32ch)
+        decode_ch_1 = 128
+        decode_ch_2 = 64
+        decode_ch_3 = 32 # 혹은 64로 유지해도 됨
+        
+        # 1단계: R4(1/32, 256) -> T1(1/16, 128)
+        # 입력: R4(256), Skip: R3(256)
+        self.terrace1 = TerraceBlock(c4, c3, decode_ch_1)
+        
+        # 2단계: T1(1/16, 128) -> T2(1/8, 64)
+        # 입력: T1(128), Skip: R2(256)
+        self.terrace2 = TerraceBlock(decode_ch_1, c2, decode_ch_2)
+        
+        # 3단계: T2(1/8, 64) -> T3(1/4, 32)
+        # 입력: T2(64), Skip: R1(256)
+        self.terrace3 = TerraceBlock(decode_ch_2, c1, decode_ch_3)
+        
+        # Segmentation Head
+        self.seg_head = nn.Sequential(
+            nn.Conv2d(decode_ch_3, decode_ch_3, 3, padding=1),
+            nn.BatchNorm2d(decode_ch_3),
+            nn.ReLU(inplace=True),
+            nn.Dropout(0.1),
+            nn.Conv2d(decode_ch_3, num_classes, 1)
+        )
+
+    def forward(self, features):
+        # features 순서: [fusion1(1/4), fusion2(1/8), fusion3(1/16), fusion4(1/32)]
+        r1, r2, r3, r4 = features
+        
+        # Terrace Flow
+        t1 = self.terrace1(r4, r3) # 1/32 + 1/16 -> 1/16
+        t2 = self.terrace2(t1, r2) # 1/16 + 1/8  -> 1/8
+        t3 = self.terrace3(t2, r1) # 1/8  + 1/4  -> 1/4
+        
+        # Final Classification
+        out = self.seg_head(t3)
+        
+        # Final Upsampling (1/4 -> 1/1)
+        out = F.interpolate(out, scale_factor=4, mode='bilinear', align_corners=False)
+        
+        return out
+
 class UNetFormer(nn.Module):
     def __init__(self,
                  decode_channels=64,
@@ -527,7 +620,8 @@ class UNetFormer(nn.Module):
             else:
                 value.requires_grad = True
 
-        self.decoder = Decoder(encoder_channels, decode_channels, dropout, window_size, num_classes)
+        self.decoder = TNetDecoder_Fused(encoder_channels=encoder_channels, num_classes=num_classes)
+        # self.decoder = Decoder(encoder_channels, decode_channels, dropout, window_size, num_classes)
         # self.decoder = Decoder_single(encoder_channels, decode_channels, dropout, window_size, num_classes)
 
     def forward(self, x, y, mode='Train'):
@@ -554,7 +648,9 @@ class UNetFormer(nn.Module):
         res2 = self.fusion2(res2x, res2y)
         res3 = self.fusion3(res3x, res3y)
         res4 = self.fusion4(res4x, res4y)
-        x = self.decoder(res1, res2, res3, res4, h, w)
+        # x = self.decoder(res1, res2, res3, res4, h, w)
+        features = [res1, res2, res3, res4]
+        x = self.decoder(features)
         
         # ## without PFF: switch Decoder_single
         # res4 = deepx + deepy
